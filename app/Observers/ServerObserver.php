@@ -3,6 +3,7 @@
 namespace App\Observers;
 
 use App\Models\Server;
+use App\Services\NodeConfigVersionService;
 use App\Services\NodeSyncService;
 
 class ServerObserver
@@ -11,14 +12,13 @@ class ServerObserver
 
     public function created(Server $server): void
     {
-        $this->notifyMachineNodesChanged($server->machine_id);
+        // Bindings are synchronized after the server row is created.
     }
 
     public function updated(Server $server): void
     {
-        if ($server->wasChanged('group_ids')) {
-            NodeSyncService::notifyFullSync($server->id);
-        } elseif ($server->wasChanged([
+        if ($server->wasChanged([
+            'group_ids',
             'server_port',
             'protocol_settings',
             'type',
@@ -27,20 +27,24 @@ class ServerObserver
             'custom_routes',
             'cert_config',
         ])) {
-            NodeSyncService::notifyConfigUpdated($server->id);
+            NodeConfigVersionService::bump($server);
         }
 
-        if ($server->wasChanged(['machine_id', 'enabled'])) {
-            $this->notifyMachineChange(
-                $server->machine_id,
-                $server->getOriginal('machine_id')
-            );
+        if ($server->wasChanged('enabled')) {
+            foreach ($server->machineBindings()->pluck('machine_id') as $machineId) {
+                NodeSyncService::notifyMachineNodesChanged((int) $machineId);
+            }
         }
     }
 
-    public function deleted(Server $server): void
+    public function deleting(Server $server): void
     {
-        $this->notifyMachineChange(null, $server->getOriginal('machine_id') ?: $server->machine_id);
+        $machineIds = $server->machineBindings()->pluck('machine_id')->map(fn ($id) => (int) $id)->all();
+        \Illuminate\Support\Facades\DB::afterCommit(function () use ($machineIds): void {
+            foreach ($machineIds as $machineId) {
+                NodeSyncService::notifyMachineNodesChanged($machineId);
+            }
+        });
     }
 
     private function notifyMachineChange(?int $newMachineId, ?int $oldMachineId): void

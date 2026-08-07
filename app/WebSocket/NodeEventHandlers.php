@@ -31,7 +31,11 @@ class NodeEventHandlers
 
         $nodeType = strtoupper($node->type);
         Cache::put(\App\Utils\CacheKey::get('SERVER_' . $nodeType . '_LAST_CHECK_AT', $nodeId), time(), 3600);
-        ServerService::updateMetrics($node, $data);
+        $sourceId = DeviceStateService::sourceId(
+            isset($conn->machineId) ? (int) $conn->machineId : null,
+            $conn->agentInstanceId ?? 'legacy'
+        );
+        ServerService::updateMetrics($node, $data, $sourceId);
 
         Log::debug("[WS] Node#{$nodeId} status updated");
     }
@@ -49,11 +53,6 @@ class NodeEventHandlers
             $data = $data['devices'];
         }
 
-        // Get old data
-        $oldDevices = $service->getNodeDevices($nodeId);
-
-        // Calculate diff
-        $removedUsers = array_diff_key($oldDevices, $data);
         $newDevices = [];
 
         foreach ($data as $userId => $ips) {
@@ -62,21 +61,21 @@ class NodeEventHandlers
             }
         }
 
-        // Handle removed users
-        foreach ($removedUsers as $userId => $ips) {
-            $service->removeNodeDevices($nodeId, $userId);
-            $service->notifyUpdate($userId);
-        }
-
-        // Handle new/updated users
-        foreach ($newDevices as $userId => $ips) {
-            $service->setDevices($userId, $nodeId, $ips);
-        }
+        $sourceId = DeviceStateService::sourceId(
+            isset($conn->machineId) ? (int) $conn->machineId : null,
+            $conn->agentInstanceId ?? 'legacy'
+        );
+        $oldDevices = $service->getNodeDevices($nodeId, $sourceId);
+        $service->replaceSourceSnapshot($nodeId, $sourceId, $newDevices);
 
         // Mark for push
         Redis::sadd('device:push_pending_nodes', $nodeId);
 
-        Log::debug("[WS] Node#{$nodeId} synced " . count($newDevices) . " users, removed " . count($removedUsers));
+        Log::debug("[WS] Node#{$nodeId} source snapshot synced", [
+            'source' => $sourceId,
+            'users' => count($newDevices),
+            'removed' => count(array_diff_key($oldDevices, $newDevices)),
+        ]);
     }
 
     /**
@@ -128,18 +127,30 @@ class NodeEventHandlers
 
         // Push config
         $config = ServerService::buildNodeConfig($node);
-        NodeRegistry::send($nodeId, 'sync.config', [
+        self::sendToConnection($conn, $nodeId, 'sync.config', [
             'config' => $config,
         ]);
 
         // Push users
         $users = ServerService::getAvailableUsers($node)->toArray();
-        NodeRegistry::send($nodeId, 'sync.users', [
+        self::sendToConnection($conn, $nodeId, 'sync.users', [
             'users' => $users,
         ]);
 
         Log::info("[WS] Full sync pushed to node#{$nodeId}", [
             'users' => count($users),
         ]);
+    }
+
+    private static function sendToConnection(TcpConnection $conn, int $nodeId, string $event, array $data): void
+    {
+        if (!empty($conn->machineNodeIds) && !array_key_exists('node_id', $data)) {
+            $data['node_id'] = $nodeId;
+        }
+        $conn->send(json_encode([
+            'event' => $event,
+            'data' => $data,
+            'timestamp' => time(),
+        ]));
     }
 }

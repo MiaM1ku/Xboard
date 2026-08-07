@@ -47,16 +47,14 @@ class UserService
 
     public function isAvailable(User $user)
     {
-        if (!$user->banned && $user->transfer_enable && ($user->expired_at > time() || $user->expired_at === NULL)) {
-            return true;
-        }
-        return false;
+		return $user->isActive();
     }
 
     public function getAvailableUsers()
     {
-        return User::whereRaw('u + d < transfer_enable')
-            ->where(function ($query) {
+		return User::where('access_enabled', true)
+			->whereNotNull('group_id')
+			->where(function ($query) {
                 $query->where('expired_at', '>=', time())
                     ->orWhere('expired_at', NULL);
             })
@@ -66,15 +64,11 @@ class UserService
 
     public function getUnAvailbaleUsers()
     {
-        return User::where(function ($query) {
-            $query->where('expired_at', '<', time())
-                ->orWhere('expired_at', 0);
-        })
-            ->where(function ($query) {
-                $query->where('plan_id', NULL)
-                    ->orWhere('transfer_enable', 0);
-            })
-            ->get();
+		return User::where('access_enabled', false)
+			->orWhereNull('group_id')
+			->orWhere('banned', true)
+			->orWhere(fn ($query) => $query->whereNotNull('expired_at')->where('expired_at', '<=', time()))
+			->get();
     }
 
     public function getUsersByIds($ids)

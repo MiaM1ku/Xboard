@@ -31,11 +31,14 @@ class TrojanTidalabController extends Controller
         $users = ServerService::getAvailableUsers($server);
         $result = [];
         foreach ($users as $user) {
-            $user->trojan_user = [
-                "password" => $user->uuid,
+            // ServerService returns normalized arrays. Keep accepting objects so
+            // legacy plugins filtering this collection remain compatible.
+            $payload = is_array($user) ? $user : (array) $user;
+            $payload['trojan_user'] = [
+                'password' => data_get($user, 'uuid'),
             ];
-            unset($user->uuid);
-            array_push($result, $user);
+            unset($payload['uuid']);
+            $result[] = $payload;
         }
         $eTag = sha1(json_encode($result));
         if (strpos($request->header('If-None-Match'), $eTag) !== false) {

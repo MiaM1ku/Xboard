@@ -157,6 +157,30 @@ class UserController extends Controller
         $user['subscribe_url'] = Helper::getSubscribeUrl($user['token']);
         $userService = new UserService();
         $user['reset_day'] = $userService->getResetDay($user);
+
+		$authUser = $request->user();
+		$hasDirectAccess = !$user->plan_id
+			&& (bool) $authUser->access_enabled
+			&& $authUser->group_id !== null
+			&& !$authUser->banned;
+		if ($hasDirectAccess) {
+			// Legacy themes only render the subscription card when plan_id is
+			// truthy. Keep the database plan-free and provide a response-only
+			// compatibility plan for directly authorized self-hosted users.
+			$user['plan_id'] = -1;
+			$directAccessPlan = new Plan();
+			$directAccessPlan->forceFill([
+				'name' => '直接授权',
+				'group_id' => $authUser->group_id,
+				'transfer_enable' => 0,
+				'speed_limit' => $user->speed_limit,
+				'device_limit' => $user->device_limit,
+			]);
+			$directAccessPlan->setAttribute('id', -1);
+			$directAccessPlan->setAttribute('is_self_hosted', true);
+			$user->setRelation('plan', $directAccessPlan);
+			$user['self_hosted_access'] = true;
+		}
         $user = HookManager::filter('user.subscribe.response', $user);
         return $this->success($user);
     }

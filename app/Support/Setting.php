@@ -16,7 +16,13 @@ class Setting
 
     public function __construct()
     {
-        $this->cache = Cache::store('redis');
+		try {
+			$this->cache = Cache::store('redis');
+		} catch (\Throwable) {
+			// CLI maintenance and minimal self-hosted installs may not load the
+			// phpredis extension. Settings still work through the default store.
+			$this->cache = Cache::store();
+		}
     }
 
     /**

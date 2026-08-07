@@ -1,0 +1,23 @@
+{
+  "index.html": {
+    "file": "assets/index-DE--Llir.js",
+    "name": "index",
+    "src": "index.html",
+    "isEntry": true,
+    "dynamicImports": [
+      "src/components/TrafficDashboard.tsx"
+    ],
+    "css": [
+      "assets/index-Dxm1Fhzx.css"
+    ]
+  },
+  "src/components/TrafficDashboard.tsx": {
+    "file": "assets/TrafficDashboard-BhVqmEYg.js",
+    "name": "TrafficDashboard",
+    "src": "src/components/TrafficDashboard.tsx",
+    "isDynamicEntry": true,
+    "imports": [
+      "index.html"
+    ]
+  }
+}

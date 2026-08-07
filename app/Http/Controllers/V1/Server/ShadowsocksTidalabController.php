@@ -26,12 +26,12 @@ class ShadowsocksTidalabController extends Controller
         $users = ServerService::getAvailableUsers($server);
         $result = [];
         foreach ($users as $user) {
-            array_push($result, [
-                'id' => $user->id,
+            $result[] = [
+                'id' => data_get($user, 'id'),
                 'port' => $server->server_port,
                 'cipher' => $server->cipher,
-                'secret' => $user->uuid
-            ]);
+                'secret' => data_get($user, 'uuid'),
+            ];
         }
         $eTag = sha1(json_encode($result));
         if (strpos($request->header('If-None-Match'), $eTag) !== false ) {

@@ -1,2 +1,7 @@
 *
 !.gitignore
+!TrafficReport/
+TrafficReport/*
+!TrafficReport/Services/
+TrafficReport/Services/*
+!TrafficReport/Services/TrafficReportService.php

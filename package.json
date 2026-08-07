@@ -1,5 +1,26 @@
 {
+  "private": true,
+  "scripts": {
+    "dev:admin": "vite --config vite.admin.config.mjs",
+    "build:admin": "tsc -p tsconfig.admin.json --noEmit && vite build --config vite.admin.config.mjs",
+    "preview:admin": "vite preview --config vite.admin.config.mjs"
+  },
   "dependencies": {
-    "chokidar": "^4.0.3"
+    "chokidar": "^4.0.3",
+    "clsx": "^2.1.1",
+    "lucide-react": "^1.28.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "recharts": "^3.10.1",
+    "swr": "^2.4.2",
+    "tailwind-merge": "^3.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.2",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^6.0.5",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.0"
   }
 }

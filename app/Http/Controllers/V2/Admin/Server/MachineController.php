@@ -9,6 +9,7 @@ use App\Models\ServerMachine;
 use App\Models\ServerMachineLoadHistory;
 use App\Services\NodeSyncService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Str;
 
 class MachineController extends Controller
 {
@@ -28,6 +29,16 @@ class MachineController extends Controller
                     'is_active' => $machine->is_active,
                     'last_seen_at' => $machine->last_seen_at,
                     'load_status' => $machine->load_status,
+                    'agent_version' => $machine->agent_version,
+                    'kernel_type' => $machine->kernel_type,
+                    'capabilities' => $machine->capabilities ?? [],
+                    'agent_instance_id' => $machine->agent_instance_id,
+					'update_request_id' => $machine->update_request_id,
+					'update_version' => $machine->update_version,
+					'update_status' => $machine->update_status,
+					'update_message' => $machine->update_message,
+					'update_requested_at' => $machine->update_requested_at,
+					'update_completed_at' => $machine->update_completed_at,
                     'servers_count' => $machine->servers_count,
                     'created_at' => $machine->created_at,
                     'updated_at' => $machine->updated_at,
@@ -122,6 +133,35 @@ class MachineController extends Controller
         ]);
     }
 
+    /** Queue the only remote operation agents accept: a signed-release upgrade. */
+    public function requestUpdate(Request $request)
+    {
+        $params = $request->validate([
+            'id' => 'required|integer|exists:v2_server_machine,id',
+            'version' => ['nullable', 'string', 'max:64', 'regex:/^(dev|v?\d+(?:\.\d+){1,3}(?:[-+][A-Za-z0-9.-]+)?)$/'],
+        ]);
+        $machine = ServerMachine::findOrFail($params['id']);
+        if (!$machine->is_active) {
+            throw new ApiException('服务器已停用，不能下发更新');
+        }
+
+        $machine->forceFill([
+            'update_request_id' => (string) Str::uuid(),
+            'update_version' => $params['version'] ?? 'dev',
+            'update_status' => 'pending',
+            'update_message' => null,
+            'update_from_instance_id' => $machine->agent_instance_id,
+            'update_requested_at' => time(),
+            'update_started_at' => null,
+            'update_completed_at' => null,
+        ])->save();
+
+        return $this->success([
+            'request_id' => $machine->update_request_id,
+            'status' => $machine->update_status,
+        ]);
+    }
+
     /**
      * 删除机器（自动解除关联节点）
      */
@@ -134,8 +174,6 @@ class MachineController extends Controller
         $machine = ServerMachine::find($params['id']);
         $machineId = $machine->id;
 
-        // Detach nodes first (sets machine_id = null), then delete and notify
-        Server::where('machine_id', $machineId)->update(['machine_id' => null]);
         $machine->delete();
 
         // Notify with empty node list so WS process cleans up registry
@@ -153,7 +191,7 @@ class MachineController extends Controller
             'machine_id' => 'required|integer|exists:v2_server_machine,id',
         ]);
 
-        $nodes = Server::where('machine_id', $params['machine_id'])
+        $nodes = Server::whereHas('machineBindings', fn ($query) => $query->where('machine_id', $params['machine_id']))
             ->orderBy('sort')
             ->get(['id', 'name', 'type', 'host', 'port', 'show', 'enabled', 'sort']);
 
@@ -202,7 +240,7 @@ class MachineController extends Controller
     private function buildInstallCommand(Request $request, ServerMachine $machine): string
     {
         $panelUrl = rtrim((string) (admin_setting('app_url') ?: $request->getSchemeAndHttpHost()), '/');
-        $installerUrl = 'https://raw.githubusercontent.com/cedar2025/xboard-node/dev/install.sh';
+        $installerUrl = 'https://raw.githubusercontent.com/MiaM1ku/Xboard-Node/dev/install.sh';
 
         return sprintf(
             'curl -fsSL %s | sudo bash -s -- --mode machine --panel %s --token %s --machine-id %d',

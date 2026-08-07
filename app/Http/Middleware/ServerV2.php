@@ -5,6 +5,7 @@ namespace App\Http\Middleware;
 use App\Exceptions\ApiException;
 use App\Models\Server as ServerModel;
 use App\Models\ServerMachine;
+use App\Models\ServerMachineBinding;
 use App\Services\ServerService;
 use Closure;
 use Illuminate\Http\Request;
@@ -79,7 +80,13 @@ class ServerV2
         $nodeId = (int) $request->input('node_id');
         if ($nodeId > 0) {
             $serverInfo = ServerModel::where('id', $nodeId)
-                ->where('machine_id', $machine->id)
+                ->whereHas('machineBindings', function ($query) use ($machine) {
+                    $query->where('machine_id', $machine->id)
+                        ->whereIn('state', [
+                            ServerMachineBinding::STATE_ACTIVE,
+                            ServerMachineBinding::STATE_DRAINING,
+                        ]);
+                })
                 ->where('enabled', true)
                 ->first();
 
@@ -88,6 +95,10 @@ class ServerV2
             }
 
             $request->attributes->set('node_info', $serverInfo);
+            $request->attributes->set('report_source', [
+                'machine_id' => (int) $machine->id,
+                'agent_instance_id' => (string) $request->input('agent_instance_id', 'legacy'),
+            ]);
         }
 
         $machine->forceFill(['last_seen_at' => now()->timestamp])->saveQuietly();

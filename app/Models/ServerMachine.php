@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Support\Str;
 
@@ -31,15 +32,35 @@ class ServerMachine extends Model
         'is_active' => 'boolean',
         'last_seen_at' => 'integer',
         'load_status' => 'array',
+        'capabilities' => 'array',
+		'update_requested_at' => 'integer',
+		'update_started_at' => 'integer',
+		'update_completed_at' => 'integer',
         'created_at' => 'timestamp',
         'updated_at' => 'timestamp',
     ];
 
     protected $hidden = ['token'];
 
-    public function servers(): HasMany
+    public function servers(): BelongsToMany
     {
-        return $this->hasMany(Server::class, 'machine_id');
+        return $this->belongsToMany(
+            Server::class,
+            'v2_server_machine_binding',
+            'machine_id',
+            'server_id'
+        )->withPivot([
+            'state',
+            'desired_config_version',
+            'applied_config_version',
+            'last_error',
+            'last_seen_at',
+        ])->withTimestamps();
+    }
+
+    public function bindings(): HasMany
+    {
+        return $this->hasMany(ServerMachineBinding::class, 'machine_id');
     }
 
     public function loadHistory(): HasMany

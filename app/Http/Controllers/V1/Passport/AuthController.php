@@ -12,6 +12,8 @@ use App\Services\Auth\MailLinkService;
 use App\Services\Auth\RegisterService;
 use App\Services\AuthService;
 use Illuminate\Http\Request;
+use App\Http\Middleware\AuthFromCookie;
+use Illuminate\Support\Facades\Cookie;
 
 class AuthController extends Controller
 {
@@ -62,8 +64,8 @@ class AuthController extends Controller
             return $this->fail($result);
         }
 
-        $authService = new AuthService($result);
-        return $this->success($authService->generateAuthData());
+		$authService = new AuthService($result);
+		return $this->withSessionCookie($request, $authService->generateAuthData());
     }
 
     /**
@@ -80,9 +82,34 @@ class AuthController extends Controller
             return $this->fail($result);
         }
 
-        $authService = new AuthService($result);
-        return $this->success($authService->generateAuthData());
+		$authService = new AuthService($result);
+		return $this->withSessionCookie($request, $authService->generateAuthData());
     }
+
+	public function logout(Request $request)
+	{
+		$request->user()?->currentAccessToken()?->delete();
+
+		return $this->success(true)->withCookie(Cookie::forget(AuthFromCookie::COOKIE));
+	}
+
+	private function withSessionCookie(Request $request, array $authData)
+	{
+		$token = preg_replace('/^Bearer\s+/i', '', (string) $authData['auth_data']);
+		$cookie = Cookie::make(
+			AuthFromCookie::COOKIE,
+			$token,
+			60 * 24 * 365,
+			'/',
+			null,
+			$request->isSecure(),
+			true,
+			false,
+			'strict'
+		);
+
+		return $this->success($authData)->withCookie($cookie);
+	}
 
     /**
      * 通过token登录

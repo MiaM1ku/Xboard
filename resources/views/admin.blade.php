@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
 
 <head>
   <meta charset="UTF-8" />
@@ -8,14 +8,17 @@
   <script>
     window.settings = {
       base_url: "/",
-      title: "{{ $title }}",
-      version: "{{ $version }}",
-      logo: "{{ $logo }}",
-      secure_path: "{{ $secure_path }}",
+      title: @json($title),
+      version: @json($version),
+      logo: @json($logo),
+      secure_path: @json($secure_path),
     };
   </script>
   @php
-    $manifestPath = public_path('assets/admin/manifest.json');
+    $rebuiltManifestPath = public_path('assets/admin-rebuilt/.vite/manifest.json');
+    $useRebuiltAdmin = file_exists($rebuiltManifestPath);
+    $assetPrefix = $useRebuiltAdmin ? 'assets/admin-rebuilt' : 'assets/admin';
+    $manifestPath = $useRebuiltAdmin ? $rebuiltManifestPath : public_path('assets/admin/manifest.json');
     $manifest = file_exists($manifestPath) ? json_decode(file_get_contents($manifestPath), true) : null;
     $entry = is_array($manifest) ? ($manifest['index.html'] ?? null) : null;
     $scripts = [];
@@ -52,21 +55,23 @@
       $collectAssets('index.html');
     }
 
-    foreach (glob(public_path('assets/admin/locales/*.js')) ?: [] as $localeFile) {
-      $locales[] = 'locales/' . basename($localeFile);
+    if (!$useRebuiltAdmin) {
+      foreach (glob(public_path('assets/admin/locales/*.js')) ?: [] as $localeFile) {
+        $locales[] = 'locales/' . basename($localeFile);
+      }
     }
     sort($locales);
   @endphp
 
   @if($entry && count($scripts) > 0)
     @foreach($styles as $css)
-      <link rel="stylesheet" crossorigin href="/assets/admin/{{ $css }}" />
+      <link rel="stylesheet" crossorigin href="/{{ $assetPrefix }}/{{ $css }}" />
     @endforeach
     @foreach($locales as $locale)
-      <script src="/assets/admin/{{ $locale }}"></script>
+      <script src="/{{ $assetPrefix }}/{{ $locale }}"></script>
     @endforeach
     @foreach($scripts as $js)
-      <script type="module" crossorigin src="/assets/admin/{{ $js }}"></script>
+      <script type="module" crossorigin src="/{{ $assetPrefix }}/{{ $js }}"></script>
     @endforeach
   @else
     {{-- Fallback: hardcoded paths for backward compatibility --}}

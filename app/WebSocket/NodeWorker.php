@@ -6,6 +6,7 @@ use App\Models\Server;
 use App\Models\ServerMachine;
 use App\Services\DeviceStateService;
 use App\Services\NodeRegistry;
+use App\Services\NodeSourceStateService;
 use App\Services\ServerService;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
@@ -183,10 +184,14 @@ class NodeWorker
         }
 
         $conn->nodeId = $nodeId;
+        $conn->agentInstanceId = (string) ($params['agent_instance_id'] ?? 'legacy');
         NodeRegistry::add($nodeId, $conn);
         Cache::put("node_ws_alive:{$nodeId}", true, 86400);
 
-        app(DeviceStateService::class)->clearAllNodeDevices($nodeId);
+        app(DeviceStateService::class)->clearSource(
+            $nodeId,
+            DeviceStateService::sourceId(null, $conn->agentInstanceId)
+        );
 
         Log::debug("[WS] Node#{$nodeId} connected", [
             'remote' => $conn->getRemoteIp(),
@@ -224,20 +229,24 @@ class NodeWorker
         $nodes = ServerService::getMachineNodes($machine);
 
         $machine->forceFill(['last_seen_at' => now()->timestamp])->saveQuietly();
+        $conn->machineId = $machineId;
+        $conn->agentInstanceId = (string) ($params['agent_instance_id'] ?? 'legacy');
         NodeRegistry::addMachine($machineId, $conn);
 
         // 把同一个连接注册到该机器下所有节点
         $nodeIds = [];
         $deviceService = app(DeviceStateService::class);
         foreach ($nodes as $node) {
-            NodeRegistry::add($node->id, $conn);
+            NodeRegistry::add($node->id, $conn, $machineId);
             Cache::put("node_ws_alive:{$node->id}", true, 86400);
-            $deviceService->clearAllNodeDevices($node->id);
+            $deviceService->clearSource(
+                $node->id,
+                DeviceStateService::sourceId($machineId, $conn->agentInstanceId)
+            );
             $nodeIds[] = $node->id;
         }
 
         // 连接上记录所属机器和节点列表
-        $conn->machineId = $machineId;
         $conn->machineNodeIds = $nodeIds;
 
         Log::debug("[WS] Machine#{$machineId} connected, nodes: " . implode(',', $nodeIds), [
@@ -305,12 +314,18 @@ class NodeWorker
         if (!empty($conn->machineNodeIds)) {
             $machineId = $conn->machineId ?? 'unknown';
             foreach ($conn->machineNodeIds as $nodeId) {
+                $wasCurrent = NodeRegistry::isRegistered($nodeId, $conn);
                 NodeRegistry::remove($nodeId, $conn);
-                Cache::forget("node_ws_alive:{$nodeId}");
-
-                $affectedUserIds = $service->clearAllNodeDevices($nodeId);
-                foreach ($affectedUserIds as $userId) {
-                    $service->notifyUpdate($userId);
+                if ($wasCurrent) {
+                    $sourceId = DeviceStateService::sourceId((int) $machineId, $conn->agentInstanceId ?? 'legacy');
+                    $service->clearSource($nodeId, $sourceId);
+                    $node = Server::find($nodeId);
+                    if ($node) {
+                        app(NodeSourceStateService::class)->clear($node, $sourceId);
+                    }
+                }
+                if (NodeRegistry::sourceCount($nodeId) === 0) {
+                    Cache::forget("node_ws_alive:{$nodeId}");
                 }
             }
 
@@ -329,12 +344,19 @@ class NodeWorker
         // 旧模式：单节点
         if (!empty($conn->nodeId)) {
             $nodeId = $conn->nodeId;
+            $wasCurrent = NodeRegistry::isRegistered($nodeId, $conn);
             NodeRegistry::remove($nodeId, $conn);
-            Cache::forget("node_ws_alive:{$nodeId}");
-
-            $affectedUserIds = $service->clearAllNodeDevices($nodeId);
-            foreach ($affectedUserIds as $userId) {
-                $service->notifyUpdate($userId);
+            $affectedUserIds = [];
+            if ($wasCurrent) {
+                $sourceId = DeviceStateService::sourceId(null, $conn->agentInstanceId ?? 'legacy');
+                $affectedUserIds = $service->clearSource($nodeId, $sourceId);
+                $node = Server::find($nodeId);
+                if ($node) {
+                    app(NodeSourceStateService::class)->clear($node, $sourceId);
+                }
+            }
+            if (NodeRegistry::sourceCount($nodeId) === 0) {
+                Cache::forget("node_ws_alive:{$nodeId}");
             }
 
             Log::debug("[WS] Node#{$nodeId} disconnected", [

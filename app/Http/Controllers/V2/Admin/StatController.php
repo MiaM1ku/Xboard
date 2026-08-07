@@ -505,4 +505,111 @@ class StatController extends Controller
             'data' => $result
         ];
     }
+
+    /**
+     * Self-hosted traffic dashboard. All values are derived from the durable
+     * daily user/server stat tables so cards, trends and ranks reconcile.
+     */
+    public function getTrafficDashboard()
+    {
+        $now = time();
+        $todayStart = strtotime('today');
+        $tomorrowStart = strtotime('+1 day', $todayStart);
+        $weekStart = strtotime('monday this week', $todayStart);
+        $monthStart = strtotime(date('Y-m-01', $todayStart));
+        $dailyStart = strtotime('-13 days', $todayStart);
+        $weeklyStart = strtotime('-11 weeks', $weekStart);
+
+        $trafficSummary = static function (int $startAt, ?int $endAt = null): array {
+            $query = StatServer::query()->where('record_at', '>=', $startAt);
+            if ($endAt !== null) {
+                $query->where('record_at', '<', $endAt);
+            }
+            $row = $query->selectRaw('COALESCE(SUM(u), 0) as upload, COALESCE(SUM(d), 0) as download, COALESCE(SUM(u + d), 0) as total')->first();
+            return [
+                'upload' => (int) ($row->upload ?? 0),
+                'download' => (int) ($row->download ?? 0),
+                'total' => (int) ($row->total ?? 0),
+            ];
+        };
+
+        $dailyBuckets = [];
+        for ($cursor = $dailyStart; $cursor < $tomorrowStart; $cursor = strtotime('+1 day', $cursor)) {
+            $key = date('Y-m-d', $cursor);
+            $dailyBuckets[$key] = ['label' => date('m-d', $cursor), 'record_at' => $cursor, 'upload' => 0, 'download' => 0, 'total' => 0];
+        }
+        $weeklyBuckets = [];
+        for ($cursor = $weeklyStart; $cursor <= $weekStart; $cursor = strtotime('+1 week', $cursor)) {
+            $key = date('o-W', $cursor);
+            $weeklyBuckets[$key] = ['label' => date('m-d', $cursor), 'record_at' => $cursor, 'upload' => 0, 'download' => 0, 'total' => 0];
+        }
+
+        StatServer::query()
+            ->where('record_at', '>=', $weeklyStart)
+            ->where('record_at', '<', $tomorrowStart)
+            ->get(['record_at', 'u', 'd'])
+            ->each(function (StatServer $row) use (&$dailyBuckets, &$weeklyBuckets): void {
+                $recordAt = (int) $row->record_at;
+                $dailyKey = date('Y-m-d', $recordAt);
+                $weekKey = date('o-W', strtotime('monday this week', $recordAt));
+                if (isset($dailyBuckets[$dailyKey])) {
+                    $dailyBuckets[$dailyKey]['upload'] += (int) $row->u;
+                    $dailyBuckets[$dailyKey]['download'] += (int) $row->d;
+                    $dailyBuckets[$dailyKey]['total'] += (int) $row->u + (int) $row->d;
+                }
+                if (isset($weeklyBuckets[$weekKey])) {
+                    $weeklyBuckets[$weekKey]['upload'] += (int) $row->u;
+                    $weeklyBuckets[$weekKey]['download'] += (int) $row->d;
+                    $weeklyBuckets[$weekKey]['total'] += (int) $row->u + (int) $row->d;
+                }
+            });
+
+        $buildRank = static function (string $type, int $startAt, int $endAt): array {
+            $model = $type === 'user' ? StatUser::query() : StatServer::query();
+            $idColumn = $type === 'user' ? 'user_id' : 'server_id';
+            $rows = $model->selectRaw("{$idColumn} as id, SUM(u) as upload, SUM(d) as download, SUM(u + d) as total")
+                ->where('record_at', '>=', $startAt)
+                ->where('record_at', '<', $endAt)
+                ->groupBy($idColumn)
+                ->orderByDesc('total')
+                ->limit(10)
+                ->get();
+            $names = $type === 'user'
+                ? User::whereIn('id', $rows->pluck('id'))->pluck('email', 'id')
+                : Server::whereIn('id', $rows->pluck('id'))->pluck('name', 'id');
+            return $rows->map(fn ($row) => [
+                'id' => (int) $row->id,
+                'name' => $names[$row->id] ?? ($type === 'user' ? "User #{$row->id}" : "Node #{$row->id}"),
+                'upload' => (int) $row->upload,
+                'download' => (int) $row->download,
+                'total' => (int) $row->total,
+            ])->values()->all();
+        };
+
+        return $this->success([
+            'generated_at' => $now,
+            'source_freshness' => [
+                'server_record_at' => (int) (StatServer::max('record_at') ?? 0),
+                'user_record_at' => (int) (StatUser::max('record_at') ?? 0),
+            ],
+            'summary' => [
+                'today' => $trafficSummary($todayStart, $tomorrowStart),
+                'week' => $trafficSummary($weekStart, $tomorrowStart),
+                'month' => $trafficSummary($monthStart, $tomorrowStart),
+                'total' => $trafficSummary(0),
+            ],
+            'daily' => array_values($dailyBuckets),
+            'weekly' => array_values($weeklyBuckets),
+            'ranks' => [
+                'today' => [
+                    'users' => $buildRank('user', $todayStart, $tomorrowStart),
+                    'nodes' => $buildRank('node', $todayStart, $tomorrowStart),
+                ],
+                'week' => [
+                    'users' => $buildRank('user', $weekStart, $tomorrowStart),
+                    'nodes' => $buildRank('node', $weekStart, $tomorrowStart),
+                ],
+            ],
+        ]);
+    }
 }

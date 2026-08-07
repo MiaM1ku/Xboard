@@ -65,16 +65,14 @@ class NodeSyncService
                 continue;
 
             if ($user->isAvailable()) {
+				$syncedUser = ServerService::getAvailableUsers($server)
+					->firstWhere('id', $user->id);
+				if (!$syncedUser) {
+					continue;
+				}
                 self::push($server->id, 'sync.user.delta', [
                     'action' => 'add',
-                    'users' => [
-                        [
-                            'id' => $user->id,
-                            'uuid' => $user->uuid,
-                            'speed_limit' => $user->speed_limit,
-                            'device_limit' => $user->device_limit,
-                        ]
-                    ],
+					'users' => [$syncedUser],
                 ]);
             } else {
                 self::push($server->id, 'sync.user.delta', [

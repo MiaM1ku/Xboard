@@ -8,9 +8,11 @@ use App\Http\Requests\Admin\UserSendMail;
 use App\Http\Requests\Admin\UserUpdate;
 use App\Jobs\SendEmailJob;
 use App\Models\Plan;
+use App\Models\Server;
+use App\Models\StatUser;
 use App\Models\User;
 use App\Services\AuthService;
-use App\Services\NodeSyncService;
+use App\Services\DeviceStateService;
 use App\Services\Plugin\HookManager;
 use App\Services\UserService;
 use App\Traits\QueryOperators;
@@ -245,14 +247,9 @@ class UserController extends Controller
         } else {
             unset($params['password']);
         }
-        // 处理订阅计划
-        if (isset($params['plan_id'])) {
-            $plan = Plan::find($params['plan_id']);
-            if (!$plan) {
-                return $this->fail([400202, '订阅计划不存在']);
-            }
-            $params['group_id'] = $plan->group_id;
-        }
+		// Self-hosted access is assigned directly by permission group. Plans and
+		// orders are deliberately not part of the authorization path.
+		unset($params['plan_id']);
         // 处理邀请用户
         if ($request->input('invite_user_email') && $inviteUser = User::byEmail($request->input('invite_user_email'))->first()) {
             $params['invite_user_id'] = $inviteUser->id;
@@ -293,6 +290,163 @@ class UserController extends Controller
         ]);
 
         return $this->success(true);
+    }
+
+	public function grantAccess(Request $request)
+	{
+		$params = $request->validate([
+			'id' => 'required|integer|exists:v2_user,id',
+			'group_id' => 'required|integer|exists:v2_server_group,id',
+			'expired_at' => 'nullable|integer|min:1',
+			'note' => 'nullable|string|max:255',
+		]);
+		$user = User::findOrFail($params['id']);
+		$user->forceFill([
+			'access_enabled' => true,
+			'group_id' => $params['group_id'],
+			'expired_at' => $params['expired_at'] ?? null,
+			'access_note' => $params['note'] ?? null,
+			'plan_id' => null,
+			'banned' => false,
+		])->save();
+		return $this->success(self::transformUserData($user->fresh(['group'])));
+	}
+
+	public function createAccess(Request $request, UserService $userService)
+	{
+		$params = $request->validate([
+			'email' => 'required|string|email:rfc|max:64',
+			'password' => 'required|string|min:8|max:128',
+			'group_id' => 'required|integer|exists:v2_server_group,id',
+			'expired_at' => 'nullable|integer|min:1',
+			'note' => 'nullable|string|max:255',
+		]);
+		$email = strtolower(trim($params['email']));
+		if (User::byEmail($email)->exists()) {
+			return $this->fail([400201, '邮箱已被使用']);
+		}
+		if (isset($params['expired_at']) && $params['expired_at'] <= time()) {
+			return $this->fail([422, '到期时间必须晚于当前时间']);
+		}
+
+		try {
+			$user = DB::transaction(function () use ($params, $email, $userService): User {
+				$user = $userService->createUser([
+					'email' => $email,
+					'password' => $params['password'],
+				]);
+				$user->forceFill([
+					'access_enabled' => true,
+					'access_note' => $params['note'] ?? null,
+					'group_id' => $params['group_id'],
+					'expired_at' => $params['expired_at'] ?? null,
+					'plan_id' => null,
+					'transfer_enable' => 0,
+					'speed_limit' => null,
+					'device_limit' => null,
+					'banned' => false,
+				]);
+				$user->save();
+				return $user->fresh(['group']);
+			});
+		} catch (\Throwable $exception) {
+			if (User::byEmail($email)->exists()) {
+				return $this->fail([400201, '邮箱已被使用']);
+			}
+			Log::error('创建直接授权用户失败', ['exception' => $exception]);
+			return $this->fail([500, '创建用户失败']);
+		}
+
+		return $this->success(self::transformUserData($user));
+	}
+
+	public function subscription(Request $request)
+	{
+		$params = $request->validate([
+			'id' => 'required|integer|exists:v2_user,id',
+		]);
+		$user = User::with('group:id,name')->findOrFail($params['id']);
+
+		return $this->success([
+			'id' => $user->id,
+			'email' => $user->email,
+			'access_enabled' => $user->access_enabled,
+			'group_id' => $user->group_id,
+			'group' => $user->group,
+			'expired_at' => $user->expired_at,
+			'banned' => $user->banned,
+			'subscribe_url' => Helper::getSubscribeUrl($user->token),
+		]);
+	}
+
+	public function revokeAccess(Request $request)
+	{
+		$params = $request->validate(['id' => 'required|integer|exists:v2_user,id']);
+		$user = User::findOrFail($params['id']);
+		$user->forceFill(['access_enabled' => false])->save();
+		(new AuthService($user))->removeAllSessions();
+		return $this->success(true);
+	}
+
+    public function activity(Request $request, DeviceStateService $deviceStateService)
+    {
+        $params = $request->validate([
+            'id' => 'required|integer|exists:v2_user,id',
+            'page' => 'nullable|integer|min:1',
+            'page_size' => 'nullable|integer|min:1|max:50',
+        ]);
+        $user = User::with('group:id,name')->findOrFail($params['id']);
+        $pageSize = (int) ($params['page_size'] ?? 10);
+        $records = StatUser::query()
+            ->where('user_id', $user->id)
+            ->orderByDesc('record_at')
+            ->paginate($pageSize, ['id', 'u', 'd', 'server_rate', 'record_at'], 'page', (int) ($params['page'] ?? 1));
+
+        $authorizedNodes = collect();
+        if ($user->group_id !== null) {
+            $authorizedNodes = Server::query()
+                ->where('enabled', true)
+                ->whereJsonContains('group_ids', (string) $user->group_id)
+                ->orderBy('sort')
+                ->get(['id', 'name', 'type', 'host', 'port']);
+        }
+
+        $nodeDevices = $deviceStateService->getUserNodeDevices((int) $user->id);
+        $onlineNodes = Server::query()
+            ->whereIn('id', array_keys($nodeDevices))
+            ->get(['id', 'name', 'type', 'host', 'port'])
+            ->map(function (Server $server) use ($nodeDevices): array {
+                $ips = $nodeDevices[$server->id] ?? [];
+                return [
+                    'id' => $server->id,
+                    'name' => $server->name,
+                    'type' => $server->type,
+                    'host' => $server->host,
+                    'port' => $server->port,
+                    'device_count' => count($ips),
+                    'ips' => $ips,
+                ];
+            })->values();
+
+        return $this->success([
+            'user' => [
+                'id' => $user->id,
+                'email' => $user->email,
+                'u' => (int) $user->u,
+                'd' => (int) $user->d,
+                'transfer_enable' => (int) $user->transfer_enable,
+                'online_count' => (int) $user->online_count,
+                'group' => $user->group,
+            ],
+            'traffic' => [
+                'data' => $records->items(),
+                'total' => $records->total(),
+                'current_page' => $records->currentPage(),
+                'last_page' => $records->lastPage(),
+            ],
+            'authorized_nodes' => $authorizedNodes,
+            'online_nodes' => $onlineNodes,
+        ]);
     }
 
     // Export users to CSV.

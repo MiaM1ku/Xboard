@@ -8,6 +8,7 @@ use App\Http\Requests\Admin\ServerSave;
 use App\Models\Server;
 use App\Models\ServerGroup;
 use App\Services\ServerService;
+use App\Services\ServerMachineBindingService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -16,9 +17,38 @@ class ManageController extends Controller
 {
     public function getNodes(Request $request)
     {
-        $servers = ServerService::getAllServers()->map(function ($item) {
+        $servers = ServerService::getAllServers();
+        $servers->load(['outboundTemplates', 'routeProfiles.outboundTemplate']);
+
+        $servers = $servers->map(function ($item) {
+            $activeOutbounds = $item->outboundTemplates
+                ->filter(fn ($template) => (bool) $template->enabled && (bool) $template->pivot->enabled)
+                ->values();
+            $activeProfiles = $item->routeProfiles
+                ->filter(fn ($profile) => (bool) $profile->enabled)
+                ->values();
+
             $item['groups'] = ServerGroup::whereIn('id', $item['group_ids'] ?? [])->get(['name', 'id']);
             $item['parent'] = $item->parent;
+            $item['machine_ids'] = $item->machines->pluck('id')->map(fn ($id) => (int) $id)->values();
+			$item['connection_methods'] = $item->parent_id ? ['parent'] : ['node_id', 'machine'];
+			$item['connection_node_id'] = $item->code ?: $item->id;
+            $item['outbound_count'] = $activeOutbounds->count();
+            $item['outbound_names'] = $activeOutbounds->pluck('name')->values();
+            $item['route_profile_count'] = $activeProfiles->count();
+            $item['route_profile_names'] = $activeProfiles->pluck('name')->values();
+            $item['machine_bindings'] = $item->machines->map(fn ($machine) => [
+                'machine_id' => (int) $machine->id,
+                'state' => $machine->pivot->state,
+                'desired_config_version' => (int) $machine->pivot->desired_config_version,
+                'applied_config_version' => $machine->pivot->applied_config_version !== null
+                    ? (int) $machine->pivot->applied_config_version
+                    : null,
+                'last_error' => $machine->pivot->last_error,
+                'last_seen_at' => $machine->pivot->last_seen_at,
+            ])->values();
+            $item->unsetRelation('outboundTemplates');
+            $item->unsetRelation('routeProfiles');
             return $item;
         });
         return $this->success($servers);
@@ -52,13 +82,21 @@ class ManageController extends Controller
     public function save(ServerSave $request)
     {
         $params = $request->validated();
+        $params = $this->normalizeParent($params, $request->integer('id') ?: null);
+        $isChild = !empty($params['parent_id']);
         if ($request->input('id')) {
             $server = Server::find($request->input('id'));
             if (!$server) {
                 return $this->fail([400202, '服务器不存在']);
             }
+			$bindings = $isChild ? [] : $this->extractBindings($params, $request, $server);
             try {
-                $server->update($params);
+                DB::transaction(function () use ($server, $params, $bindings): void {
+                    $server->update($params);
+                    if ($bindings !== null) {
+                        ServerMachineBindingService::sync($server, $bindings);
+                    }
+                });
                 return $this->success(true);
             } catch (\Exception $e) {
                 Log::error($e);
@@ -66,13 +104,45 @@ class ManageController extends Controller
             }
         }
 
+		$bindings = $isChild ? [] : $this->extractBindings($params, $request);
         try {
-            Server::create($params);
+            DB::transaction(function () use ($params, $bindings): void {
+                $server = Server::create($params);
+                ServerMachineBindingService::sync($server, $bindings ?? []);
+            });
             return $this->success(true);
         } catch (\Exception $e) {
             Log::error($e);
             return $this->fail([500, '创建失败']);
         }
+    }
+
+    private function normalizeParent(array $params, ?int $serverId): array
+    {
+        $parentId = (int) ($params['parent_id'] ?? 0);
+        if ($parentId <= 0) {
+            $params['parent_id'] = null;
+            return $params;
+        }
+
+        if ($serverId !== null && $parentId === $serverId) {
+            throw new ApiException('节点不能将自己设为父节点');
+        }
+
+        $parent = Server::find($parentId);
+        if (!$parent) {
+            throw new ApiException('父节点不存在');
+        }
+        if (!empty($parent->parent_id)) {
+            throw new ApiException('父节点必须是实际后端节点，不能继续嵌套');
+        }
+        if ($parent->type !== ($params['type'] ?? null)) {
+            throw new ApiException('父节点与当前节点的协议类型必须一致');
+        }
+
+        $params['parent_id'] = $parentId;
+        $params['machine_id'] = null;
+        return $params;
     }
 
     public function update(Request $request)
@@ -81,6 +151,11 @@ class ManageController extends Controller
             'id' => 'required|integer',
             'show' => 'nullable|integer',
             'machine_id' => 'nullable|integer',
+            'machine_ids' => 'nullable|array',
+            'machine_ids.*' => 'integer|distinct|exists:v2_server_machine,id',
+            'machine_bindings' => 'nullable|array',
+            'machine_bindings.*.machine_id' => 'required|integer|distinct|exists:v2_server_machine,id',
+            'machine_bindings.*.state' => 'nullable|string|in:active,draining,disabled',
             'enabled' => 'nullable|boolean',
         ]);
 
@@ -92,15 +167,17 @@ class ManageController extends Controller
         if (array_key_exists('show', $params)) {
             $server->show = (int) $params['show'];
         }
-        if (array_key_exists('machine_id', $params)) {
-            $server->machine_id = $params['machine_id'] ?: null;
-        }
+        $bindings = $this->extractBindings($params, $request, $server);
         if (array_key_exists('enabled', $params)) {
             $server->enabled = (bool) $params['enabled'];
         }
 
         if (!$server->save()) {
             return $this->fail([500, '保存失败']);
+        }
+
+        if ($bindings !== null) {
+            ServerMachineBindingService::sync($server, $bindings);
         }
 
         return $this->success(true);
@@ -227,6 +304,8 @@ class ManageController extends Controller
             'show' => 'nullable|integer|in:0,1',
             'enabled' => 'nullable|boolean',
             'machine_id' => 'nullable|integer',
+            'machine_ids' => 'nullable|array',
+            'machine_ids.*' => 'integer|distinct|exists:v2_server_machine,id',
         ]);
 
         $ids = $params['ids'];
@@ -241,8 +320,12 @@ class ManageController extends Controller
         if (array_key_exists('enabled', $params) && $params['enabled'] !== null) {
             $update['enabled'] = (bool) $params['enabled'];
         }
-        if (array_key_exists('machine_id', $params)) {
-            $update['machine_id'] = $params['machine_id'] ?: null;
+        $bindings = null;
+        if (array_key_exists('machine_ids', $params)) {
+            $bindings = $params['machine_ids'];
+            unset($params['machine_ids']);
+        } elseif (array_key_exists('machine_id', $params)) {
+            $bindings = $params['machine_id'] ? [(int) $params['machine_id']] : [];
         }
 
         if (empty($update)) {
@@ -251,10 +334,13 @@ class ManageController extends Controller
 
         try {
             $servers = Server::whereIn('id', $ids)->get();
-            DB::transaction(function () use ($servers, $update) {
+            DB::transaction(function () use ($servers, $update, $bindings) {
                 /** @var Server $server */
                 foreach ($servers as $server) {
                     $server->update($update);
+                    if ($bindings !== null) {
+                        ServerMachineBindingService::sync($server, $bindings);
+                    }
                 }
             });
             return $this->success(true);
@@ -337,5 +423,33 @@ class ManageController extends Controller
             'key' => $keyPem,
             'config' => $configPem,
         ]);
+    }
+
+    private function extractBindings(array &$params, Request $request, ?Server $server = null): ?array
+    {
+        $bindings = null;
+        if ($request->has('machine_bindings')) {
+            $bindings = $params['machine_bindings'] ?? [];
+        } elseif ($request->has('machine_ids')) {
+            $bindings = $params['machine_ids'] ?? [];
+        } elseif ($request->has('machine_id')) {
+			$machineId = !empty($params['machine_id']) ? (int) $params['machine_id'] : null;
+
+			// The original admin dist only knows one machine_id. When it edits a
+			// node that already has multiple bindings, it submits the mirrored
+			// first machine again. Preserve the full binding set in that case;
+			// selecting another machine or clearing the field remains intentional.
+			if ($server
+				&& $machineId !== null
+				&& $machineId === (int) $server->machine_id
+				&& $server->machineBindings()->count() > 1) {
+				$bindings = null;
+			} else {
+				$bindings = $machineId !== null ? [$machineId] : [];
+			}
+        }
+
+        unset($params['machine_bindings'], $params['machine_ids']);
+        return $bindings;
     }
 }

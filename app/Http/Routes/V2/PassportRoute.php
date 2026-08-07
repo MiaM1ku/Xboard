@@ -15,6 +15,7 @@ class PassportRoute
             // Auth
             $router->post('/auth/register', [AuthController::class, 'register']);
             $router->post('/auth/login', [AuthController::class, 'login']);
+			$router->post('/auth/logout', [AuthController::class, 'logout'])->middleware('user');
             $router->get ('/auth/token2Login', [AuthController::class, 'token2Login']);
             $router->post('/auth/forget', [AuthController::class, 'forget']);
             $router->post('/auth/getQuickLoginUrl', [AuthController::class, 'getQuickLoginUrl']);

@@ -34,6 +34,10 @@ class MachineController extends Controller
                 'push_interval' => (int) admin_setting('server_push_interval', 60),
                 'pull_interval' => (int) admin_setting('server_pull_interval', 60),
             ],
+			'update' => $machine->update_status === 'pending' ? [
+				'request_id' => $machine->update_request_id,
+				'version' => $machine->update_version ?: 'dev',
+			] : null,
         ]);
     }
 
@@ -52,6 +56,10 @@ class MachineController extends Controller
             'disk.used' => 'nullable|integer|min:0',
             'net.in_speed' => 'nullable|numeric|min:0',
             'net.out_speed' => 'nullable|numeric|min:0',
+            'agent_version' => 'nullable|string|max:64',
+            'kernel_type' => 'nullable|string|in:xray,singbox',
+            'capabilities' => 'nullable|array',
+            'agent_instance_id' => 'nullable|uuid',
         ]);
 
         $machine = $this->authenticateMachine($request);
@@ -87,7 +95,23 @@ class MachineController extends Controller
         $machine->forceFill([
             'load_status' => $loadStatus,
             'last_seen_at' => $recordedAt,
+            'agent_version' => $request->input('agent_version', $machine->agent_version),
+            'kernel_type' => $request->input('kernel_type', $machine->kernel_type),
+            'capabilities' => $request->input('capabilities', $machine->capabilities),
+            'agent_instance_id' => $request->input('agent_instance_id', $machine->agent_instance_id),
         ])->save();
+
+		if ($machine->update_status === 'running'
+			&& $machine->update_from_instance_id
+			&& $request->filled('agent_instance_id')
+			&& $request->input('agent_instance_id') !== $machine->update_from_instance_id
+		) {
+			$machine->forceFill([
+				'update_status' => 'succeeded',
+				'update_message' => 'Agent restarted with '.$request->input('agent_version', 'unknown'),
+				'update_completed_at' => time(),
+			])->save();
+		}
 
         $historyData = [
             'machine_id' => $machine->id,
@@ -116,6 +140,42 @@ class MachineController extends Controller
 
         return response()->json(['data' => true]);
     }
+
+	public function claimUpdate(Request $request): JsonResponse
+	{
+		$request->validate(['request_id' => 'required|uuid']);
+		$machine = $this->authenticateMachine($request);
+		$accepted = ServerMachine::query()
+			->whereKey($machine->id)
+			->where('update_request_id', $request->input('request_id'))
+			->where('update_status', 'pending')
+			->update([
+				'update_status' => 'running',
+				'update_started_at' => time(),
+				'update_message' => 'Agent accepted update',
+			]);
+		return response()->json(['accepted' => $accepted === 1]);
+	}
+
+	public function finishUpdate(Request $request): JsonResponse
+	{
+		$request->validate([
+			'request_id' => 'required|uuid',
+			'status' => 'required|string|in:failed,succeeded',
+			'message' => 'nullable|string|max:2000',
+		]);
+		$machine = $this->authenticateMachine($request);
+		$updated = ServerMachine::query()
+			->whereKey($machine->id)
+			->where('update_request_id', $request->input('request_id'))
+			->where('update_status', 'running')
+			->update([
+				'update_status' => $request->input('status'),
+				'update_message' => $request->input('message'),
+				'update_completed_at' => time(),
+			]);
+		return response()->json(['updated' => $updated === 1]);
+	}
 
     private function authenticateMachine(Request $request): ServerMachine
     {

@@ -75,6 +75,7 @@ class User extends Authenticatable
         'remind_traffic' => 'boolean',
         'commission_auto_check' => 'boolean',
         'commission_rate' => 'float',
+		'access_enabled' => 'boolean',
         'next_reset_at' => 'timestamp',
         'last_reset_at' => 'timestamp',
     ];
@@ -158,9 +159,10 @@ class User extends Authenticatable
      */
     public function isActive(): bool
     {
-        return !$this->banned && 
-               ($this->expired_at === null || $this->expired_at > time()) &&
-               $this->plan_id !== null;
+		return (bool) $this->access_enabled
+			&& !$this->banned
+			&& $this->group_id !== null
+			&& ($this->expired_at === null || $this->expired_at > time());
     }
 
     /** 
@@ -168,7 +170,7 @@ class User extends Authenticatable
      */
     public function isAvailable(): bool
     {     
-        return $this->isActive() && $this->getRemainingTraffic() > 0;   
+		return $this->isActive();
     }
 
     /**

@@ -48,6 +48,7 @@ class Kernel extends HttpKernel
             // \Illuminate\Routing\Middleware\ThrottleRequests::class . ':api',
             // \Illuminate\Routing\Middleware\SubstituteBindings::class,
             \App\Http\Middleware\ApplyRuntimeSettings::class,
+			\App\Http\Middleware\AuthFromCookie::class,
             \App\Http\Middleware\ForceJson::class,
             \App\Http\Middleware\Language::class,
             'bindings',

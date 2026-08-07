@@ -5,11 +5,13 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Support\Facades\Cache;
 use App\Utils\CacheKey;
 use App\Utils\Helper;
 use App\Models\User;
 use Illuminate\Database\Eloquent\Casts\Attribute;
+use App\Services\NodeSourceStateService;
 
 /**
  * App\Models\Server
@@ -133,6 +135,7 @@ class Server extends Model
         'u' => 'integer',
         'd' => 'integer',
         'machine_id' => 'integer',
+        'config_version' => 'integer',
     ];
 
     private const MULTIPLEX_CONFIGURATION = [
@@ -372,21 +375,26 @@ class Server extends Model
 
     public function generateServerPassword(User $user): string
     {
+        return $this->generateServerPasswordForCredential($user->uuid);
+    }
+
+    public function generateServerPasswordForCredential(string $credential): string
+    {
         if ($this->type !== self::TYPE_SHADOWSOCKS) {
-            return $user->uuid;
+            return $credential;
         }
 
 
         $cipher = data_get($this, 'protocol_settings.cipher');
         if (!$cipher || !isset(self::CIPHER_CONFIGURATIONS[$cipher])) {
-            return $user->uuid;
+            return $credential;
         }
 
         $config = self::CIPHER_CONFIGURATIONS[$cipher];
         // Use parent's created_at if this is a child node
         $serverCreatedAt = $this->parent_id ? $this->parent->created_at : $this->created_at;
         $serverKey = Helper::getServerKey($serverCreatedAt, $config['serverKeySize']);
-        $userKey = Helper::uuidToBase64($user->uuid, $config['userKeySize']);
+        $userKey = Helper::uuidToBase64($credential, $config['userKeySize']);
         return "{$serverKey}:{$userKey}";
     }
 
@@ -425,6 +433,52 @@ class Server extends Model
     public function machine(): \Illuminate\Database\Eloquent\Relations\BelongsTo
     {
         return $this->belongsTo(ServerMachine::class, 'machine_id');
+    }
+
+    public function machines(): BelongsToMany
+    {
+        return $this->belongsToMany(
+            ServerMachine::class,
+            'v2_server_machine_binding',
+            'server_id',
+            'machine_id'
+        )->withPivot([
+            'state',
+            'desired_config_version',
+            'applied_config_version',
+            'last_error',
+            'last_seen_at',
+        ])->withTimestamps();
+    }
+
+    public function machineBindings(): HasMany
+    {
+        return $this->hasMany(ServerMachineBinding::class, 'server_id');
+    }
+
+    public function outboundTemplates(): BelongsToMany
+    {
+        return $this->belongsToMany(
+            OutboundTemplate::class,
+            'v2_server_outbound_template',
+            'server_id',
+            'outbound_template_id'
+        )->withPivot(['tag', 'sort', 'enabled'])->withTimestamps()->orderByPivot('sort');
+    }
+
+    public function routeTemplates(): BelongsToMany
+    {
+        return $this->belongsToMany(
+            RouteTemplate::class,
+            'v2_server_route_template',
+            'server_id',
+            'route_template_id'
+        )->withPivot(['sort', 'enabled'])->withTimestamps()->orderByPivot('sort');
+    }
+
+    public function routeProfiles(): HasMany
+    {
+        return $this->hasMany(ServerRouteProfile::class, 'server_id')->orderBy('sort');
     }
 
     public function groups()
@@ -556,6 +610,42 @@ class Server extends Model
                 return Cache::get(CacheKey::get("SERVER_{$type}_LOAD_STATUS", $serverId));
             }
         );
+    }
+
+    protected function sourceStates(): Attribute
+    {
+        return Attribute::make(
+            get: fn () => app(NodeSourceStateService::class)->states($this)
+        );
+    }
+
+    protected function healthStatus(): Attribute
+    {
+        return Attribute::make(get: function (): string {
+            $servingMachineIds = $this->machineBindings()
+                ->whereIn('state', ['active', 'draining'])
+                ->pluck('machine_id')
+                ->map(fn ($id) => (int) $id)
+                ->all();
+            $states = app(NodeSourceStateService::class)->states($this);
+
+            if ($servingMachineIds === []) {
+                return $states === [] ? 'offline' : 'healthy';
+            }
+
+            $onlineMachineIds = [];
+            foreach ($states as $state) {
+                if (preg_match('/^machine:(\d+):/', (string) ($state['source_id'] ?? ''), $match)) {
+                    $onlineMachineIds[(int) $match[1]] = true;
+                }
+            }
+            $online = count(array_intersect($servingMachineIds, array_keys($onlineMachineIds)));
+            return match (true) {
+                $online === 0 => 'offline',
+                $online === count($servingMachineIds) => 'healthy',
+                default => 'degraded',
+            };
+        });
     }
 
     public function getCurrentRate(): float
