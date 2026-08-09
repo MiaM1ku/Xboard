@@ -32,6 +32,7 @@ class RouteIdentityService
                     'uuid' => self::deriveUUID((string) $user->uuid, (string) $profile->uuid),
                     'auth_user' => sprintf('xb:u:%d:rp:%s', (int) $user->id, $profile->uuid),
                     'outbound_tag' => $outboundTag,
+                    'entry_server_ids' => $profile->entry_server_ids ?? [],
                 ];
             })
             ->filter(fn (array $identity) => $identity['outbound_tag'] !== '')
@@ -51,6 +52,16 @@ class RouteIdentityService
 
         return $server->type === Server::TYPE_VLESS
             && (int) data_get($server->protocol_settings, 'tls') === 2;
+    }
+
+    public static function allowsEntry(array $identity, int $serverId): bool
+    {
+        $entryServerIds = collect($identity['entry_server_ids'] ?? [])
+            ->map(fn ($id) => (int) $id)
+            ->filter(fn ($id) => $id > 0)
+            ->unique();
+
+        return $entryServerIds->isEmpty() || $entryServerIds->contains($serverId);
     }
 
     public static function deriveUUID(string $baseUUID, string $profileUUID): string

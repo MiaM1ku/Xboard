@@ -10,7 +10,11 @@ class ServerRouteProfile extends Model
 {
     protected $table = 'v2_server_route_profile';
     protected $guarded = ['id'];
-    protected $casts = ['enabled' => 'boolean', 'sort' => 'integer'];
+    protected $casts = [
+        'enabled' => 'boolean',
+        'sort' => 'integer',
+        'entry_server_ids' => 'array',
+    ];
 
     protected static function booted(): void
     {

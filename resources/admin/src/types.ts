@@ -203,6 +203,7 @@ export interface RouteProfile {
   uuid?: string
   name: string
   outbound_template_id: number | null
+  entry_server_ids?: number[] | null
   enabled: boolean
 }
 

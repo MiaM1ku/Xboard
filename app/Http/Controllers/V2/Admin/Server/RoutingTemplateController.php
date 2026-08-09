@@ -275,6 +275,8 @@ class RoutingTemplateController extends Controller
             'profiles.*.name' => 'required|string|max:255',
             'profiles.*.outbound_template_id' => 'nullable|integer|exists:v2_outbound_template,id',
             'profiles.*.enabled' => 'nullable|boolean',
+            'profiles.*.entry_server_ids' => 'nullable|array',
+            'profiles.*.entry_server_ids.*' => 'integer|distinct|exists:v2_server,id',
         ]);
         $server = Server::findOrFail($params['server_id']);
         $selectedRouteIds = collect($params['routes'] ?? [])->pluck('template_id')->map(fn ($id) => (int) $id)->all();
@@ -328,12 +330,22 @@ class RoutingTemplateController extends Controller
                 $model = !empty($profile['id'])
                     ? $server->routeProfiles()->whereKey($profile['id'])->firstOrFail()
                     : new ServerRouteProfile(['server_id' => $server->id]);
-                $model->fill([
+                $profileData = [
                     'name' => $profile['name'],
                     'outbound_template_id' => $profile['outbound_template_id'] ?? null,
                     'sort' => $sort,
                     'enabled' => $profile['enabled'] ?? true,
-                ])->save();
+                ];
+                if (array_key_exists('entry_server_ids', $profile)) {
+                    $entryServerIds = collect($profile['entry_server_ids'] ?? [])
+                        ->map(fn ($id) => (int) $id)
+                        ->filter(fn ($id) => $id > 0)
+                        ->unique()
+                        ->values()
+                        ->all();
+                    $profileData['entry_server_ids'] = $entryServerIds ?: null;
+                }
+                $model->fill($profileData)->save();
                 $keptIds[] = $model->id;
             }
             $server->routeProfiles()->whereNotIn('id', $keptIds ?: [0])->delete();

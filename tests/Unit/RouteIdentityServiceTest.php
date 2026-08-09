@@ -55,4 +55,12 @@ class RouteIdentityServiceTest extends TestCase
         self::assertTrue($service->supportsProfiles($shadowsocks));
         self::assertFalse($service->supportsProfiles($vlessTLS));
     }
+
+    public function test_entry_filter_defaults_to_all_and_can_target_one_child(): void
+    {
+        self::assertTrue(RouteIdentityService::allowsEntry([], 137));
+        self::assertTrue(RouteIdentityService::allowsEntry(['entry_server_ids' => []], 137));
+        self::assertTrue(RouteIdentityService::allowsEntry(['entry_server_ids' => ['137']], 137));
+        self::assertFalse(RouteIdentityService::allowsEntry(['entry_server_ids' => [137]], 138));
+    }
 }

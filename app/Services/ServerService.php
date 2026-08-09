@@ -100,6 +100,9 @@ class ServerService
 
             $identityServer = $server->parent_id ? $server->parent : $server;
             foreach (app(RouteIdentityService::class)->forUser($identityServer, $user) as $identity) {
+                if (!RouteIdentityService::allowsEntry($identity, (int) $server->id)) {
+                    continue;
+                }
                 $profiled = clone $server;
                 // A route profile is a complete subscription entry. Its name is
                 // deliberately user-facing, so do not prefix it with the source
