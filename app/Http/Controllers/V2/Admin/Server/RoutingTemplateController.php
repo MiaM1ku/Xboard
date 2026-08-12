@@ -276,7 +276,7 @@ class RoutingTemplateController extends Controller
             'profiles.*.outbound_template_id' => 'nullable|integer|exists:v2_outbound_template,id',
             'profiles.*.enabled' => 'nullable|boolean',
             'profiles.*.entry_server_ids' => 'nullable|array',
-            'profiles.*.entry_server_ids.*' => 'integer|distinct|exists:v2_server,id',
+            'profiles.*.entry_server_ids.*' => 'integer|exists:v2_server,id',
         ]);
         $server = Server::findOrFail($params['server_id']);
         $selectedRouteIds = collect($params['routes'] ?? [])->pluck('template_id')->map(fn ($id) => (int) $id)->all();
