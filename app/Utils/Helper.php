@@ -7,6 +7,8 @@ use Illuminate\Support\Arr;
 
 class Helper
 {
+    public const SUBSCRIPTION_UNLIMITED_DISPLAY_BYTES = 100 * 1024 * 1024 * 1024 * 1024;
+
     public static function uuidToBase64($uuid, $length)
     {
         return base64_encode(substr($uuid, 0, $length));
@@ -118,6 +120,20 @@ class Helper
         } else {
             return round($byte, 2) . ' B';
         }
+    }
+
+    /**
+     * Display quota for subscription clients. Unlimited users (0/null)
+     * report 100 TiB so clients can still show used traffic.
+     */
+    public static function subscriptionTransferEnable(int|float|string|null $transferEnable): int
+    {
+        $total = (int) $transferEnable;
+        if ($total <= 0) {
+            return self::SUBSCRIPTION_UNLIMITED_DISPLAY_BYTES;
+        }
+
+        return $total;
     }
 
     public static function getSubscribeUrl(string $token, $subscribeUrl = null)

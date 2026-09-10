@@ -3,6 +3,8 @@
 namespace App\Support;
 
 use App\Services\Plugin\HookManager;
+use App\Utils\Helper;
+use Illuminate\Contracts\Support\Arrayable;
 
 abstract class AbstractProtocol
 {
@@ -57,13 +59,30 @@ abstract class AbstractProtocol
      */
     public function __construct($user, $servers, $clientName = null, $clientVersion = null, $userAgent = null)
     {
-        $this->user = $user;
+        $this->user = $this->normalizeSubscribeUser($user);
         $this->servers = $servers;
         $this->clientName = $clientName;
         $this->clientVersion = $clientVersion;
         $this->userAgent = $userAgent;
         $this->protocolRequirements = $this->normalizeProtocolRequirements($this->protocolRequirements);
         $this->servers = HookManager::filter('protocol.servers.filtered', $this->filterServersByVersion());
+    }
+
+    /**
+     * @param mixed $user
+     * @return array<string, mixed>
+     */
+    private function normalizeSubscribeUser($user): array
+    {
+        $data = $user instanceof Arrayable ? $user->toArray() : (array) $user;
+        $data['u'] = (int) ($data['u'] ?? 0);
+        $data['d'] = (int) ($data['d'] ?? 0);
+        $data['transfer_enable'] = Helper::subscriptionTransferEnable($data['transfer_enable'] ?? 0);
+        $data['expired_at'] = $data['expired_at'] ?? null;
+        $data['token'] ??= is_object($user) ? ($user->token ?? null) : null;
+        $data['uuid'] ??= is_object($user) ? ($user->uuid ?? null) : null;
+
+        return $data;
     }
 
     /**

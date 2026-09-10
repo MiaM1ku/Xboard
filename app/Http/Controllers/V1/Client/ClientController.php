@@ -202,7 +202,7 @@ class ClientController extends Controller
         if (!(int) admin_setting('show_info_to_server_enable', 0))
             return;
         $useTraffic = $user['u'] + $user['d'];
-        $totalTraffic = $user['transfer_enable'];
+        $totalTraffic = Helper::subscriptionTransferEnable($user['transfer_enable'] ?? 0);
         $remainingTraffic = Helper::trafficConvert($totalTraffic - $useTraffic);
         $expiredDate = $user['expired_at'] ? date('Y-m-d', $user['expired_at']) : __('长期有效');
         $userService = new UserService();
