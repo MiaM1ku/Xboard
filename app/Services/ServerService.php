@@ -108,7 +108,9 @@ class ServerService
                 // deliberately user-facing, so do not prefix it with the source
                 // node name again ("node · exit").
                 $profiled->name = $identity['profile_name'];
-                $profiled->password = $server->generateServerPasswordForCredential($identity['uuid']);
+                $profiled->password = $server->generateServerPasswordForCredential(
+                    ChildIdentityService::credentialFor($server, $identity['uuid'])
+                );
                 $profiled->route_profile_id = $identity['profile_id'];
                 $entries[] = $profiled;
             }
@@ -149,7 +151,10 @@ class ServerService
                     // is intentionally disabled in the self-hosted distribution.
                     'speed_limit' => 0,
                     'device_limit' => 0,
-                    'identities' => app(RouteIdentityService::class)->forUser($node, $user),
+                    'identities' => array_values(array_merge(
+                        app(RouteIdentityService::class)->forUser($node, $user),
+                        app(ChildIdentityService::class)->forUser($node, $user),
+                    )),
                 ];
             });
         return HookManager::filter('server.users.get', $users, $node);

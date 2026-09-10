@@ -44,10 +44,6 @@ class TrafficReportService
             ->whereBetween('record_at', [$startAt, $endAt])
             ->selectRaw('server_id, sum(u + d) as total_traffic')
             ->groupBy('server_id')->get();
-        $nodeLabels = Server::query()
-            ->whereIn('id', $nodeStats->pluck('server_id')->filter()->all())
-            ->pluck('name', 'id');
-
         $profileStats = collect();
         $profileLabels = collect();
         if (Schema::hasTable('v2_user_node_traffic')) {
@@ -61,11 +57,20 @@ class TrafficReportService
                 ->pluck('name', 'id');
         }
 
+        $servers = Server::query()
+            ->whereIn('id', $nodeStats->pluck('server_id')->merge($profileStats->pluck('server_id'))->filter()->unique()->all())
+            ->get(['id', 'name', 'parent_id']);
+        $nodeLabels = $servers->pluck('name', 'id');
+        $physicalIds = $servers->mapWithKeys(fn ($server) => [
+            (int) $server->id => (int) $server->parent_id > 0 ? (int) $server->parent_id : (int) $server->id,
+        ]);
+
         $entries = $this->splitTrafficCandidates(
             $nodeStats,
             $profileStats,
             $nodeLabels,
-            $profileLabels
+            $profileLabels,
+            $physicalIds
         )->sortByDesc('total_traffic')->take($this->topLimit())->values();
 
         return $this->formatReportLines(
@@ -102,21 +107,27 @@ class TrafficReportService
                 ->groupBy('user_id', 'server_id', 'route_profile_id')->get();
         }
 
-        $servers = Server::query()->whereIn('id', $nodeTotals->pluck('server_id')->filter()->all())
-            ->pluck('name', 'id');
+        $serverModels = Server::query()
+            ->whereIn('id', $nodeTotals->pluck('server_id')->merge($profileTotals->pluck('server_id'))->filter()->unique()->all())
+            ->get(['id', 'name', 'parent_id']);
+        $servers = $serverModels->pluck('name', 'id');
+        $physicalIds = $serverModels->mapWithKeys(fn ($server) => [
+            (int) $server->id => (int) $server->parent_id > 0 ? (int) $server->parent_id : (int) $server->id,
+        ]);
         $profiles = ServerRouteProfile::query()
             ->whereIn('id', $profileTotals->pluck('route_profile_id')->filter()->all())
             ->pluck('name', 'id');
 
         $lines = $stats->values()->map(function ($stat, $index) use (
-            $emails, $nodeTotals, $profileTotals, $servers, $profiles
+            $emails, $nodeTotals, $profileTotals, $servers, $profiles, $physicalIds
         ) {
             $uid = (int) $stat->user_id;
             $topNode = $this->splitTrafficCandidates(
                 $nodeTotals->where('user_id', $uid),
                 $profileTotals->where('user_id', $uid),
                 $servers,
-                $profiles
+                $profiles,
+                $physicalIds
             )->sortByDesc('total_traffic')->first();
             $suffix = $topNode
                 ? sprintf(' · 最高节点 %s %s',
@@ -141,10 +152,16 @@ class TrafficReportService
         Collection $nodeStats,
         Collection $profileStats,
         Collection $nodeLabels,
-        Collection $profileLabels
+        Collection $profileLabels,
+        Collection $physicalIds = null
     ): Collection {
-        $profileTrafficByServer = $profileStats->groupBy('server_id')
-            ->map(fn (Collection $items) => (int) $items->sum('total_traffic'));
+        $physicalIds ??= collect();
+        $profileTrafficByServer = $profileStats->reduce(function (Collection $carry, $stat) use ($physicalIds) {
+            $serverId = (int) $stat->server_id;
+            $physicalId = (int) $physicalIds->get($serverId, $serverId);
+            $carry[$physicalId] = (int) $carry->get($physicalId, 0) + (int) $stat->total_traffic;
+            return $carry;
+        }, collect());
 
         $nodes = $nodeStats->map(function ($stat) use ($profileTrafficByServer, $nodeLabels) {
             $serverId = (int) $stat->server_id;
@@ -157,10 +174,13 @@ class TrafficReportService
             ];
         });
 
-        $profiles = $profileStats->map(function ($stat) use ($profileLabels) {
+        $profiles = $profileStats->map(function ($stat) use ($profileLabels, $nodeLabels) {
             $profileId = (int) $stat->route_profile_id;
+            $serverId = (int) $stat->server_id;
             return (object) [
-                'label' => $profileLabels->get($profileId, sprintf('Unknown Profile (%d)', $profileId)),
+                'label' => $profileId > 0
+                    ? $profileLabels->get($profileId, sprintf('Unknown Profile (%d)', $profileId))
+                    : $nodeLabels->get($serverId, sprintf('Unknown Server (%d)', $serverId)),
                 'total_traffic' => (int) $stat->total_traffic,
             ];
         });

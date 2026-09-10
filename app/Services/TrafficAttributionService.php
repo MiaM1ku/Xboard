@@ -20,26 +20,48 @@ class TrafficAttributionService
     public function recordProfileTraffic(Server $server, array $traffic): void
     {
         foreach ($traffic as $authUser => $value) {
-            if (!is_string($authUser)
-                || !preg_match('/^xb:u:(\d+):rp:([A-Za-z0-9-]{1,64})$/', $authUser, $matches)
-            ) {
+            if (!is_string($authUser)) {
                 continue;
             }
 
-            $userId = (int) $matches[1];
-            $profile = ServerRouteProfile::query()
-                ->where('server_id', $server->id)
-                ->where('uuid', $matches[2])
-                ->first();
-            if (!$profile) {
+            $parsed = ChildIdentityService::parseAuthUser($authUser);
+            if (!$parsed) {
                 continue;
             }
 
-            $this->upsert($server, [$userId => $value], $profile);
+            $target = $server;
+            if ($parsed['child_id']) {
+                $child = Server::query()
+                    ->where('id', $parsed['child_id'])
+                    ->where('parent_id', $server->id)
+                    ->first();
+                if (!$child) {
+                    continue;
+                }
+                $target = $child;
+            }
+
+            $profile = null;
+            if ($parsed['profile_uuid']) {
+                $profile = ServerRouteProfile::query()
+                    ->where('server_id', $server->id)
+                    ->where('uuid', $parsed['profile_uuid'])
+                    ->first();
+                if (!$profile) {
+                    continue;
+                }
+            }
+
+            $this->upsert(
+                $target,
+                [$parsed['user_id'] => $value],
+                $profile,
+                $profile?->uuid ?? ($parsed['child_id'] ? ChildIdentityService::CHILD_PROFILE_UUID : '')
+            );
         }
     }
 
-    private function upsert(Server $server, array $traffic, ?ServerRouteProfile $profile): void
+    private function upsert(Server $server, array $traffic, ?ServerRouteProfile $profile, ?string $profileUuid = null): void
     {
         $recordAt = strtotime(date('Y-m-d'));
         $now = now();
@@ -58,7 +80,7 @@ class TrafficAttributionService
                 'server_id' => (int) $server->id,
                 'route_profile_id' => $profile?->id,
                 'outbound_template_id' => $profile?->outbound_template_id,
-                'profile_uuid' => $profile?->uuid ?? '',
+                'profile_uuid' => $profileUuid ?? $profile?->uuid ?? '',
                 'u' => $u,
                 'd' => $d,
                 'record_type' => 'd',

@@ -29,6 +29,25 @@ class TrafficReportServiceTest extends TestCase
         self::assertSame(30 * 1024 ** 3, $entries->sum('total_traffic'));
     }
 
+    public function test_child_node_traffic_is_split_from_the_parent_and_labelled_by_child_name(): void
+    {
+        $entries = $this->invoke('splitTrafficCandidates',
+            collect([
+                (object) ['server_id' => 161, 'total_traffic' => 20 * 1024 ** 3],
+            ]),
+            collect([
+                (object) ['server_id' => 159, 'route_profile_id' => null, 'total_traffic' => 6 * 1024 ** 3],
+            ]),
+            collect([161 => 'Bage', 159 => 'Bage IX']),
+            collect(),
+            collect([161 => 161, 159 => 161])
+        )->keyBy('label');
+
+        self::assertSame(14 * 1024 ** 3, $entries['Bage']->total_traffic);
+        self::assertSame(6 * 1024 ** 3, $entries['Bage IX']->total_traffic);
+        self::assertSame(20 * 1024 ** 3, $entries->sum('total_traffic'));
+    }
+
     public function test_standard_markdown_output_does_not_escape_domain_dots_or_wrap_traffic_in_code(): void
     {
         $bytes = (int) (14.79 * 1024 ** 3);

@@ -12,6 +12,7 @@ use App\Utils\Helper;
 use App\Models\User;
 use Illuminate\Database\Eloquent\Casts\Attribute;
 use App\Services\NodeSourceStateService;
+use App\Services\ChildIdentityService;
 
 /**
  * App\Models\Server
@@ -375,7 +376,9 @@ class Server extends Model
 
     public function generateServerPassword(User $user): string
     {
-        return $this->generateServerPasswordForCredential($user->uuid);
+        return $this->generateServerPasswordForCredential(
+            ChildIdentityService::credentialFor($this, (string) $user->uuid)
+        );
     }
 
     public function generateServerPasswordForCredential(string $credential): string
@@ -391,8 +394,11 @@ class Server extends Model
         }
 
         $config = self::CIPHER_CONFIGURATIONS[$cipher];
-        // Use parent's created_at if this is a child node
-        $serverCreatedAt = $this->parent_id ? $this->parent->created_at : $this->created_at;
+        // Child nodes share the inbound server PSK. Traffic is distinguished
+        // by a derived user credential, not a second server key.
+        $serverCreatedAt = ChildIdentityService::isChildNode($this)
+            ? ($this->parent->created_at ?? $this->created_at)
+            : $this->created_at;
         $serverKey = Helper::getServerKey($serverCreatedAt, $config['serverKeySize']);
         $userKey = Helper::uuidToBase64($credential, $config['userKeySize']);
         return "{$serverKey}:{$userKey}";
@@ -423,6 +429,11 @@ class Server extends Model
     public function parent(): BelongsTo
     {
         return $this->belongsTo(self::class, 'parent_id', 'id');
+    }
+
+    public function children(): HasMany
+    {
+        return $this->hasMany(self::class, 'parent_id');
     }
 
     public function stats(): HasMany
