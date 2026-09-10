@@ -1,6 +1,6 @@
 import { useMemo, useState, type DragEvent, type FormEvent } from 'react'
 import useSWR from 'swr'
-import { Braces, GripVertical, KeyRound, ListOrdered, Network, Pencil, Plus, RefreshCw, Route as RouteIcon, Save, Search, Sparkles, Trash2, Waypoints, X } from 'lucide-react'
+import { Braces, Copy, GripVertical, KeyRound, ListOrdered, Network, Pencil, Plus, RefreshCw, Route as RouteIcon, Save, Search, Sparkles, Trash2, Waypoints, X } from 'lucide-react'
 import { api } from '../lib/api'
 import { formatBytes } from '../lib/format'
 import type { Group, Machine, MachineBinding, MachineBindingState, NodeRecord, RoutingData } from '../types'
@@ -121,6 +121,23 @@ function toDraft(node?: NodeRecord): NodeDraft {
   }
 }
 
+function toCopiedChildDraft(source: NodeRecord, nodes: NodeRecord[]): NodeDraft {
+  const parent = source.parent_id
+    ? nodes.find((candidate) => candidate.id === source.parent_id)
+    : source
+  const draft = toDraft(source)
+
+  return {
+    ...draft,
+    id: undefined,
+    name: `${parent?.name || source.name}@`,
+    host: '',
+    code: '',
+    parentId: parent ? String(parent.id) : '',
+    bindings: [],
+  }
+}
+
 function parseDnsEnv(value: string): Record<string, string> {
   if (!value.trim()) return {}
   if (value.trim().startsWith('{')) {
@@ -164,8 +181,9 @@ function jsonArrayError(value: string): string {
   }
 }
 
-function NodeModal({ node, nodes, machines, groups, open, onClose, onSaved }: {
+function NodeModal({ node, copyFrom, nodes, machines, groups, open, onClose, onSaved }: {
   node?: NodeRecord
+  copyFrom?: NodeRecord
   nodes: NodeRecord[]
   machines: Machine[]
   groups: Group[]
@@ -173,7 +191,8 @@ function NodeModal({ node, nodes, machines, groups, open, onClose, onSaved }: {
   onClose: () => void
   onSaved: () => void
 }) {
-  const [draft, setDraft] = useState<NodeDraft>(() => toDraft(node))
+  const template = node || copyFrom
+  const [draft, setDraft] = useState<NodeDraft>(() => copyFrom ? toCopiedChildDraft(copyFrom, nodes) : toDraft(node))
   const [saving, setSaving] = useState(false)
   const [generatingReality, setGeneratingReality] = useState(false)
   const [routingTab, setRoutingTab] = useState<'outbounds' | 'routes'>('outbounds')
@@ -387,8 +406,8 @@ function NodeModal({ node, nodes, machines, groups, open, onClose, onSaved }: {
         enabled: draft.enabled,
         parent_id: draft.parentId ? Number(draft.parentId) : null,
         group_ids: draft.groupIds.map(String),
-        route_ids: node?.route_ids || [],
-        tags: node?.tags || [],
+        route_ids: template?.route_ids || [],
+        tags: template?.tags || [],
         protocol_settings: protocolSettings,
         cert_config: {
           cert_mode: certMode,
@@ -406,7 +425,7 @@ function NodeModal({ node, nodes, machines, groups, open, onClose, onSaved }: {
         custom_routes: customRoutes,
         machine_bindings: draft.parentId ? [] : draft.bindings.map((binding) => ({ machine_id: binding.machine_id, state: binding.state })),
       })
-      notify(node ? '节点已更新' : '节点已创建')
+      notify(node ? '节点已更新' : copyFrom ? '子节点已创建' : '节点已创建')
       onSaved()
       onClose()
     } catch (reason) {
@@ -421,8 +440,8 @@ function NodeModal({ node, nodes, machines, groups, open, onClose, onSaved }: {
       open={open}
       onClose={onClose}
       width="large"
-      title={node ? `编辑节点 #${node.id}` : '新建节点'}
-      description="一个节点可以同时绑定多台 xbnode 服务器；不绑定时仍可使用原 node_id 方式独立接入。"
+      title={node ? `编辑节点 #${node.id}` : copyFrom ? `复制「${copyFrom.name}」为子节点` : '新建节点'}
+      description={copyFrom ? '已继承协议、端口、权限组和父节点；填写名称后缀与新的入口地址即可保存。' : '一个节点可以同时绑定多台 xbnode 服务器；不绑定时仍可使用原 node_id 方式独立接入。'}
       footer={<><Button variant="secondary" onClick={onClose}>取消</Button><Button loading={saving} onClick={() => document.getElementById('node-form-submit')?.click()}>保存节点</Button></>}
     >
       <form id="node-form" onSubmit={save}>
@@ -702,6 +721,7 @@ export function NodesPage() {
   const [protocol, setProtocol] = useState('all')
   const [status, setStatus] = useState<'enabled' | 'disabled' | 'all'>('enabled')
   const [editor, setEditor] = useState<NodeRecord | 'new' | null>(null)
+  const [copySource, setCopySource] = useState<NodeRecord | null>(null)
   const [configureNode, setConfigureNode] = useState<NodeRecord | null>(null)
   const [sorting, setSorting] = useState(false)
   const [savingSort, setSavingSort] = useState(false)
@@ -823,7 +843,7 @@ export function NodesPage() {
                   <td>{node.parent_id ? <span className="muted">复用 {node.parent?.name || `#${node.parent_id}`}</span> : node.machine_ids?.length ? <div className="connection-methods">{node.machine_bindings.map((binding) => <Badge key={binding.machine_id} tone={binding.state === 'active' ? 'success' : binding.state === 'draining' ? 'warning' : 'neutral'}>SID {binding.machine_id} · {binding.state}</Badge>)}</div> : <span className="muted">独立部署</span>}</td>
                   <td>{node.online ?? 0} / {node.online_conn ?? 0}</td>
                   <td><div className="connection-methods"><button type="button" onClick={() => void quickUpdate(node, { enabled: !Boolean(node.enabled) })} className={`badge ${node.enabled ? 'badge-success' : 'badge-neutral'}`}>{node.enabled ? '已启用' : '已停用'}</button><button type="button" onClick={() => void quickUpdate(node, { show: node.show ? 0 : 1 })} className={`badge ${node.show ? 'badge-info' : 'badge-neutral'}`}>{node.show ? '可见' : '隐藏'}</button></div></td>
-                  <td><div className="table-actions"><Button variant="secondary" size="small" disabled={sorting || !routingRequest.data} onClick={() => setConfigureNode(node)} title={routingRequest.error ? '出口模板加载失败，请刷新页面' : undefined}><Waypoints size={14} />配置出口</Button><Button variant="ghost" size="icon" disabled={sorting} onClick={() => setEditor(node)} aria-label={`编辑 ${node.name}`}><Pencil size={15} /></Button><Button variant="ghost" size="icon" disabled={sorting} onClick={() => void remove(node)} aria-label={`删除 ${node.name}`}><Trash2 size={15} /></Button></div></td>
+                  <td><div className="table-actions"><Button variant="secondary" size="small" disabled={sorting || !routingRequest.data} onClick={() => setConfigureNode(node)} title={routingRequest.error ? '出口模板加载失败，请刷新页面' : undefined}><Waypoints size={14} />配置出口</Button><Button variant="ghost" size="icon" disabled={sorting} onClick={() => setCopySource(node)} aria-label={`复制 ${node.name} 为子节点`} title="复制为子节点"><Copy size={15} /></Button><Button variant="ghost" size="icon" disabled={sorting} onClick={() => setEditor(node)} aria-label={`编辑 ${node.name}`}><Pencil size={15} /></Button><Button variant="ghost" size="icon" disabled={sorting} onClick={() => void remove(node)} aria-label={`删除 ${node.name}`}><Trash2 size={15} /></Button></div></td>
                 </tr>
               ))}</tbody>
             </table>
@@ -831,6 +851,7 @@ export function NodesPage() {
         ) : <EmptyState icon={<Network size={19} />} title="没有匹配的节点" description="调整筛选条件，或创建第一个节点。" action={<Button onClick={() => setEditor('new')}><Plus size={15} />新建节点</Button>} />}
       </Card>
       {editor ? <NodeModal key={editor === 'new' ? 'new' : editor.id} node={editor === 'new' ? undefined : editor} nodes={nodes} machines={machineRequest.data || []} groups={groupRequest.data || []} open onClose={() => setEditor(null)} onSaved={() => void nodeRequest.mutate()} /> : null}
+      {copySource ? <NodeModal key={`copy-${copySource.id}`} copyFrom={copySource} nodes={nodes} machines={machineRequest.data || []} groups={groupRequest.data || []} open onClose={() => setCopySource(null)} onSaved={() => void nodeRequest.mutate()} /> : null}
       {configureNode && routingRequest.data ? <NodeRoutingConfigurationModal node={configureNode} routing={routingRequest.data} onClose={() => setConfigureNode(null)} onSaved={() => void nodeRequest.mutate()} /> : null}
     </>
   )
