@@ -11,6 +11,7 @@ use App\Models\StatServer;
 use App\Models\StatUser;
 use App\Models\Ticket;
 use App\Models\User;
+use App\Services\NodeEntryTrafficService;
 use App\Services\StatisticalService;
 use Illuminate\Http\Request;
 
@@ -442,23 +443,29 @@ class StatController extends Controller
         $previousEndDate = $startDate;
 
         if ($type === 'node') {
-            // Get node traffic data
-            $currentData = StatServer::selectRaw('server_id as id, SUM(u + d) as value')
-                ->where('record_at', '>=', $startDate)
-                ->where('record_at', '<=', $endDate)
-                ->groupBy('server_id')
-                ->orderBy('value', 'DESC')
-                ->limit(10)
-                ->get();
-
-            // Get previous period data for comparison
-            $previousData = StatServer::selectRaw('server_id as id, SUM(u + d) as value')
-                ->where('record_at', '>=', $previousStartDate)
-                ->where('record_at', '<', $previousEndDate)
-                ->whereIn('server_id', $currentData->pluck('id'))
-                ->groupBy('server_id')
-                ->get()
+            $ranker = app(NodeEntryTrafficService::class);
+            $currentRows = $ranker->rank($startDate, $endDate + 1, 10);
+            $previousRows = collect($ranker->rank($previousStartDate, $previousEndDate + 1, 50))
                 ->keyBy('id');
+
+            $result = [];
+            foreach ($currentRows as $row) {
+                $previousValue = (int) ($previousRows[$row['id']]['total'] ?? 0);
+                $change = $previousValue > 0 ? round(($row['total'] - $previousValue) / $previousValue * 100, 1) : 0;
+                $result[] = [
+                    'id' => (string) $row['id'],
+                    'name' => $row['name'],
+                    'value' => $row['total'],
+                    'previousValue' => $previousValue,
+                    'change' => $change,
+                    'timestamp' => date('c', $endDate),
+                ];
+            }
+
+            return [
+                'timestamp' => date('c'),
+                'data' => $result,
+            ];
 
         } else {
             // Get user traffic data
@@ -565,6 +572,9 @@ class StatController extends Controller
             });
 
         $buildRank = static function (string $type, int $startAt, int $endAt): array {
+            if ($type === 'node') {
+                return app(NodeEntryTrafficService::class)->rank($startAt, $endAt, 10);
+            }
             $model = $type === 'user' ? StatUser::query() : StatServer::query();
             $idColumn = $type === 'user' ? 'user_id' : 'server_id';
             $rows = $model->selectRaw("{$idColumn} as id, SUM(u) as upload, SUM(d) as download, SUM(u + d) as total")
